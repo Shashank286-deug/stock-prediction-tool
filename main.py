@@ -1,3 +1,4 @@
+import streamlit as st
 import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
@@ -5,22 +6,49 @@ import numpy as np
 import xgboost as xgb
 import matplotlib.pyplot as plt
 import requests
-import sys, os
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import warnings
 
 # Suppress warnings
 warnings.filterwarnings('ignore')
 
+# --- PAGE CONFIGURATION ---
+st.set_page_config(page_title="IndusVC AI Terminal", layout="wide", page_icon="🚀")
+
+# --- CUSTOM CSS FOR PROFESSIONAL LOOK ---
+st.markdown("""
+    <style>
+    .metric-card {
+        background-color: #0e1117;
+        border: 1px solid #30333d;
+        border-radius: 5px;
+        padding: 15px;
+        text-align: center;
+    }
+    .stButton>button {
+        width: 100%;
+        background-color: #00D26A;
+        color: black;
+        font-weight: bold;
+    }
+    /* Enhance the Analyst Report Box */
+    .stInfo {
+        background-color: #0e1117;
+        border: 1px solid #4CAF50;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 # --- CONFIGURATION: SECTOR LISTS ---
 SECTORS = {
-    "1": ("TECH & AI", ['NVDA', 'TSLA', 'AAPL', 'MSFT', 'AMD', 'GOOG', 'AMZN', 'META']),
-    "2": ("CRYPTO", ['BTC-USD', 'ETH-USD', 'SOL-USD', 'DOGE-USD', 'XRP-USD', 'ADA-USD']),
-    "3": ("FINANCE", ['JPM', 'BAC', 'GS', 'V', 'MA', 'BLK']),
-    "4": ("ENERGY", ['XOM', 'CVX', 'SHELL', 'BP', 'OXY']),
-    "5": ("WATCHLIST", ['NVDA', 'BTC-USD', 'TSLA', 'PLTR', 'COIN']) 
+    "TECH & AI": ['NVDA', 'TSLA', 'AAPL', 'MSFT', 'AMD', 'GOOG', 'AMZN', 'META'],
+    "CRYPTO": ['BTC-USD', 'ETH-USD', 'SOL-USD', 'DOGE-USD', 'XRP-USD', 'ADA-USD'],
+    "FINANCE": ['JPM', 'BAC', 'GS', 'V', 'MA', 'BLK'],
+    "ENERGY": ['XOM', 'CVX', 'SHELL', 'BP', 'OXY'],
+    "WATCHLIST": ['NVDA', 'BTC-USD', 'TSLA', 'PLTR', 'COIN'] 
 }
 
+# --- THE INDUS VC ENGINE (CORE LOGIC) ---
 class IndusVCEngine:
     def __init__(self, ticker):
         self.ticker = ticker
@@ -34,7 +62,6 @@ class IndusVCEngine:
         self.win_rate = 0.0 
 
     def fetch_data(self):
-        if verbose: print(f"1. 📡 Fetching data for {self.ticker}...")
         stock = yf.Ticker(self.ticker)
         self.data = stock.history(period="5y")
         
@@ -52,7 +79,6 @@ class IndusVCEngine:
         self.data.set_index('Date', inplace=True)
         
         # Macro Data
-        if verbose: print("   - 🌎 Merging Macro Data...")
         try:
             macro_tickers = ['SPY', '^VIX']
             macro_data = yf.download(macro_tickers, period="5y", progress=False)['Close']
@@ -63,42 +89,40 @@ class IndusVCEngine:
         except:
             pass 
 
-        # Crypto Check
-        if "-USD" in self.ticker and verbose:
+        if "-USD" in self.ticker:
             self.fetch_crypto_fng()
 
     def analyze_sentiment(self):
-        """Scans news headlines for sentiment"""
-        if verbose: print("   - 📰 Analyzing News Sentiment...")
         try:
             stock = yf.Ticker(self.ticker)
             news = stock.news
             if not news: return
-            
             analyzer = SentimentIntensityAnalyzer()
-            scores = []
-            for article in news:
-                title = article.get('title', '')
-                scores.append(analyzer.polarity_scores(title)['compound'])
-            
-            if scores:
-                self.sentiment_score = sum(scores) / len(scores)
+            scores = [analyzer.polarity_scores(a.get('title', ''))['compound'] for a in news]
+            if scores: self.sentiment_score = sum(scores) / len(scores)
         except:
             pass
 
     def extract_fundamentals(self):
         if "-USD" in self.ticker: return
         try:
+            # We now fetch MANY more metrics for the dashboard
+            i = self.info
             self.fundamentals = {
-                "PE": self.info.get('trailingPE', None),
-                "Margins": self.info.get('profitMargins', None),
-                "MarketCap": self.info.get('marketCap', None)
+                "PE": i.get('trailingPE', None),
+                "Margins": i.get('profitMargins', None),
+                "MarketCap": i.get('marketCap', None),
+                "Sector": i.get('sector', 'Unknown'),
+                "Industry": i.get('industry', 'Unknown'),
+                "High52": i.get('fiftyTwoWeekHigh', None),
+                "Low52": i.get('fiftyTwoWeekLow', None),
+                "Dividend": i.get('dividendYield', None),
+                "DebtToEquity": i.get('debtToEquity', None)
             }
         except:
             pass
 
     def fetch_crypto_fng(self):
-        if verbose: print("   - 🪙 Fetching Fear & Greed...")
         try:
             url = "https://api.alternative.me/fng/?limit=1"
             data = requests.get(url).json()
@@ -107,18 +131,11 @@ class IndusVCEngine:
             pass
 
     def engineer_features(self):
-        if verbose: print("2. 🧠 Engineering Quant Features (ATR & Sharpe)...")
         df = self.data.copy()
-        
-        # Target
         df['Target'] = np.log(df['Close'] / df['Close'].shift(1))
-        
-        # Technicals
         df['RSI'] = ta.rsi(df['Close'], length=14)
         df['SMA_50'] = ta.sma(df['Close'], length=50)
         df['Dist_SMA_50'] = (df['Close'] - df['SMA_50']) / df['SMA_50']
-        
-        # ATR (Volatility)
         df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=14)
         
         self.features = ['RSI', 'Dist_SMA_50', 'ATR'] 
@@ -134,11 +151,9 @@ class IndusVCEngine:
         self.data = df
 
     def train_model(self):
-        if verbose: print("3. 🤖 Training XGBoost...")
         split = int(len(self.data) * 0.8)
         self.train_data = self.data.iloc[:split]
         self.test_data = self.data.iloc[split:]
-        
         self.model = xgb.XGBRegressor(objective='reg:squarederror', n_estimators=1000, learning_rate=0.01, max_depth=4, n_jobs=-1)
         self.model.fit(self.train_data[self.features], self.train_data['Target'])
 
@@ -152,12 +167,9 @@ class IndusVCEngine:
         p = win_rate
         q = 1 - p
         b = reward_risk_ratio
-        kelly_fraction = (b * p - q) / b
-        safe_kelly = kelly_fraction * 0.5 # Half Kelly for safety
-        return max(0.0, safe_kelly * 100)
+        return max(0.0, ((b * p - q) / b) * 0.5 * 100)
 
     def run_backtest(self):
-        print("4. ⏳ Running Profit Simulator (1 Year)...")
         initial_capital = 10000
         cash = initial_capital
         portfolio_values = []
@@ -171,172 +183,238 @@ class IndusVCEngine:
         losses = 0
         
         for i in range(len(self.test_data) - 1):
-            move = preds_pct[i]
-            if move > 0.5:
-                actual_return = (prices[i+1] - prices[i]) / prices[i]
-                if actual_return > 0: wins += 1
+            if preds_pct[i] > 0.5 and cash > 0:
+                cash = (cash / prices[i]) * prices[i+1] # Simulate holding for 1 day
+                if prices[i+1] > prices[i]: wins += 1
                 else: losses += 1
+            elif preds_pct[i] < -0.5 and cash > 0:
+                 # In this simple model we just stay in cash, so value doesn't change
+                 pass
+            portfolio_values.append(cash)
                 
         total_trades = wins + losses
         self.win_rate = wins / total_trades if total_trades > 0 else 0
         
-        print(f"\n📊 BACKTEST STATS: Win Rate: {self.win_rate*100:.1f}% ({wins}/{total_trades} trades)")
+        # Create Plot
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.plot(dates[:-1], portfolio_values, label='AI Strategy', color='#00D26A')
         
-        returns = pd.Series(prices).pct_change().dropna()
-        sharpe = (returns.mean() / returns.std()) * np.sqrt(252)
-        print(f"📊 SHARPE RATIO: {sharpe:.2f} (Risk-Adjusted Return)")
-
-    def explain_decision(self, pred_pct, rsi, vix, atr, current_price, kelly_pct):
-        explanation = []
+        # Buy Hold comparison
+        buy_hold = (prices[:-1] / prices[0]) * initial_capital
+        ax.plot(dates[:-1], buy_hold, label='Buy & Hold', color='gray', linestyle='--', alpha=0.5)
         
-        # 1. AI Signal
-        if pred_pct > 0.5: explanation.append(f"AI predicts **GROWTH** (+{pred_pct:.2f}%).")
-        elif pred_pct < -0.5: explanation.append(f"AI predicts **DROP** ({pred_pct:.2f}%).")
-        else: explanation.append("AI predicts **FLAT** market.")
-
-        # 2. Sentiment Signal
-        if self.sentiment_score > 0.05: explanation.append("News sentiment is **Positive** 🟢.")
-        elif self.sentiment_score < -0.05: explanation.append("News sentiment is **Negative** 🔴.")
-
-        # 3. Fundamental Warning
-        if self.fundamentals:
-            pe = self.fundamentals.get('PE')
-            if pe and pe > 80: explanation.append("⚠️ **Valuation Warning:** Stock is very expensive (High P/E).")
-
-        # 4. Risk Plan
-        stop_loss = current_price - (2 * atr) 
-        target_price = current_price + (3 * atr) 
-        explanation.append(f"🛡️ **Risk Plan:** Stop Loss @ **${stop_loss:.2f}**, Target @ **${target_price:.2f}**.")
+        ax.set_title(f"Profit Simulation ($10k Start)")
+        ax.legend()
+        ax.grid(True, alpha=0.1)
+        ax.set_facecolor('#0e1117')
+        fig.patch.set_facecolor('#0e1117')
         
-        # 5. Position Sizing
-        if pred_pct > 0.5:
-            if kelly_pct > 0: explanation.append(f"💰 **Bet Size:** Allocate **{kelly_pct:.1f}%** of capital.")
-            else: explanation.append("💰 **Bet Size:** Win rate too low, avoid trade.")
+        # Color axes for dark mode
+        ax.tick_params(colors='white')
+        ax.xaxis.label.set_color('white')
+        ax.yaxis.label.set_color('white')
+        ax.title.set_color('white')
+        for spine in ax.spines.values(): spine.set_color('#30333d')
 
-        return " ".join(explanation)
+        return fig, portfolio_values[-1], self.win_rate
 
-    def predict_tomorrow(self):
-        latest = self.data.iloc[[-1]][self.features]
-        curr = self.data.iloc[-1]['Close']
-        atr = latest['ATR'].values[0] 
-        pred_pct = self.get_forecast()
-        kelly = self.calculate_kelly(self.win_rate)
+    def generate_analyst_report(self, pred_pct, rsi, vix, atr, curr, kelly_pct, sma_50):
+        report = ""
         
-        print("\n" + "="*60)
-        print(f"  🔮 INDUS VC: {self.ticker} INTELLIGENCE REPORT")
-        print("="*60)
-        print(f"Current Price:   ${curr:.2f}")
-        print(f"AI Forecast:     {pred_pct:+.2f}%")
+        # 1. AI SIGNAL
+        if pred_pct > 0.5: report += f"**🤖 AI Signal:** BUY (+{pred_pct:.2f}%) 🟢\n"
+        elif pred_pct < -0.5: report += f"**🤖 AI Signal:** SELL ({pred_pct:.2f}%) 🔴\n"
+        else: report += f"**🤖 AI Signal:** HOLD (Flat) 🟡\n"
         
-        # --- QUANT METRICS ---
-        print("-" * 60)
-        print(f"📐 VOLATILITY (ATR): ${atr:.2f} (Daily Swing)")
-        print(f"🛡️ STOP LOSS:       ${curr - (2*atr):.2f}")
-        print(f"🎯 PROFIT TARGET:   ${curr + (3*atr):.2f}")
-        print("-" * 60)
+        # 2. TREND & MOMENTUM (New!)
+        trend = "UPTREND 📈" if curr > sma_50 else "DOWNTREND 📉"
+        report += f"**📊 Trend:** {trend} (Price vs SMA50)\n"
         
-        if pred_pct > 0.5: print("🎯 SIGNAL: BUY 🟢")
-        elif pred_pct < -0.5: print("🎯 SIGNAL: SELL 🔴")
-        else: print("🎯 SIGNAL: HOLD 🟡")
-        
-        # --- CRYPTO SECTION ---
-        if self.crypto_fng:
-            val, label = self.crypto_fng
-            print(f"🧠 CRYPTO MOOD: {val} ({label.upper()})")
-            
-        # --- FUNDAMENTALS ---
-        if self.fundamentals and not "-USD" in self.ticker:
-            pe = self.fundamentals.get('PE', 'N/A')
-            marg = self.fundamentals.get('Margins', 0)
-            if isinstance(pe, (int, float)): pe = f"{pe:.1f}"
-            print(f"📊 HEALTH: P/E Ratio: {pe} | Margins: {marg*100:.1f}%")
+        if rsi > 70: report += "⚠️ **Momentum:** Overbought (RSI > 70). Risk of pullback.\n"
+        elif rsi < 30: report += "✅ **Momentum:** Oversold (RSI < 30). Potential bounce.\n"
+        else: report += "ℹ️ **Momentum:** Neutral. Follow the trend.\n"
 
-        rsi = latest['RSI'].values[0]
-        vix = latest['VIX_Level'].values[0] if 'VIX_Level' in latest.columns else 0
+        # 3. VOLATILITY & RISK
+        vol_state = "HIGH ⚡" if atr > (curr * 0.03) else "STABLE 🌊"
+        report += f"**📉 Volatility:** {vol_state} (ATR: ${atr:.2f})\n"
         
-        print("-" * 60)
-        print("📝 **ANALYST SUMMARY:**")
-        print(self.explain_decision(pred_pct, rsi, vix, atr, curr, kelly))
-        print("="*60)
+        if vix > 30: report += "🚨 **Market Risk:** Extreme Fear. Reduce position sizes.\n"
+        
+        # 4. TRADE PLAN
+        stop = curr - (2*atr)
+        target = curr + (3*atr)
+        risk_reward = 3/2 # Since target is 3ATR and stop is 2ATR
+        
+        report += "\n---\n**🛡️ TRADE EXECUTION PLAN:**\n"
+        report += f"- **Entry Zone:** ${curr:.2f}\n"
+        report += f"- **Stop Loss:** ${stop:.2f}\n"
+        report += f"- **Profit Target:** ${target:.2f} (Risk/Reward: 1:1.5)\n"
+        report += f"- **Kelly Bet Size:** {kelly_pct:.1f}% of Capital"
+        
+        return report
 
-# --- GLOBAL VARIABLES ---
-verbose = True 
+# --- STREAMLIT UI LOGIC ---
 
-def run_radar(tickers):
-    global verbose
-    verbose = False 
-    print(f"\n📡 SCANNING {len(tickers)} ASSETS...")
-    leaderboard = []
+st.title("🚀 IndusVC: Institutional Quant Dashboard")
+st.markdown("---")
+
+# SIDEBAR
+with st.sidebar:
+    st.header("📡 Command Center")
+    mode = st.radio("Select Mode:", ["Market Radar", "Deep Dive Analysis"])
+    st.markdown("---")
     
-    for t in tickers:
+    if mode == "Deep Dive Analysis":
+        ticker_input = st.text_input("Enter Ticker:", value="NVDA").upper()
+        run_btn = st.button("Run Full Analysis")
+        
+    elif mode == "Market Radar":
+        sector = st.selectbox("Select Sector:", list(SECTORS.keys()))
+        scan_btn = st.button(f"Scan {sector} Sector")
+
+# MAIN AREA: DEEP DIVE
+if mode == "Deep Dive Analysis" and run_btn:
+    with st.spinner(f"Analyzing {ticker_input} (Fundamentals, Macro, AI)..."):
         try:
-            print(f".", end="", flush=True) 
+            # Initialize Engine
+            engine = IndusVCEngine(ticker_input)
+            engine.fetch_data()
+            engine.analyze_sentiment()
+            engine.engineer_features()
+            engine.train_model()
+            
+            # Get Data
+            curr_price = engine.data.iloc[-1]['Close']
+            forecast_pct = engine.get_forecast()
+            target_price = curr_price * (1 + forecast_pct/100)
+            
+            # 1. HEADLINES (METRICS)
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Current Price", f"${curr_price:.2f}")
+            col2.metric("AI Forecast (24h)", f"{forecast_pct:+.2f}%", delta_color="normal")
+            col3.metric("Target Price", f"${target_price:.2f}")
+            
+            # Crypto F&G or Sentiment
+            if engine.crypto_fng:
+                val, label = engine.crypto_fng
+                col4.metric("Crypto F&G", f"{val}", label)
+            else:
+                sent_label = "Neutral"
+                if engine.sentiment_score > 0.05: sent_label = "Positive 🟢"
+                elif engine.sentiment_score < -0.05: sent_label = "Negative 🔴"
+                col4.metric("News Sentiment", sent_label)
+
+            # 2. CHARTS & BACKTEST
+            st.subheader("📊 Performance & Simulation")
+            fig, final_balance, win_rate = engine.run_backtest()
+            st.pyplot(fig)
+            
+            b_col1, b_col2, b_col3 = st.columns(3)
+            b_col1.metric("Simulated Profit (1Yr)", f"${final_balance - 10000:.2f}")
+            b_col2.metric("AI Win Rate", f"{win_rate*100:.1f}%")
+            
+            # Kelly Calculation
+            kelly = engine.calculate_kelly(win_rate)
+            b_col3.metric("Kelly Bet Size", f"{kelly:.1f}%")
+
+            # 3. ANALYST REPORT (NOW WITH MORE INFO)
+            st.subheader("📝 Quant Analyst Report")
+            latest = engine.data.iloc[-1]
+            
+            # Pass SMA_50 to the report generator now
+            report = engine.generate_analyst_report(
+                forecast_pct, 
+                latest['RSI'], 
+                latest.get('VIX_Level', 0), 
+                latest['ATR'], 
+                curr_price, 
+                kelly,
+                latest['SMA_50']
+            )
+            st.info(report)
+            
+            # 4. FUNDAMENTALS EXPANDER (ENRICHED)
+            if engine.fundamentals:
+                with st.expander("📊 Fundamental Health Card", expanded=True):
+                    # Show Sector info
+                    st.caption(f"Sector: {engine.fundamentals.get('Sector')} | Industry: {engine.fundamentals.get('Industry')}")
+                    
+                    # Row 1
+                    f1, f2, f3, f4 = st.columns(4)
+                    
+                    mcap = engine.fundamentals.get('MarketCap', 0)
+                    if mcap: mcap_fmt = f"${mcap/1e9:.1f}B"
+                    else: mcap_fmt = "N/A"
+                    f1.metric("Market Cap", mcap_fmt)
+                    
+                    pe = engine.fundamentals.get('PE')
+                    f2.metric("P/E Ratio", f"{pe:.1f}" if pe else "N/A")
+                    
+                    marg = engine.fundamentals.get('Margins')
+                    f3.metric("Profit Margin", f"{marg*100:.1f}%" if marg else "N/A")
+                    
+                    div = engine.fundamentals.get('Dividend')
+                    f4.metric("Dividend Yield", f"{div*100:.2f}%" if div else "0%")
+
+                    st.markdown("---")
+                    
+                    # Row 2
+                    f5, f6, f7, f8 = st.columns(4)
+                    
+                    high = engine.fundamentals.get('High52')
+                    f5.metric("52W High", f"${high:.2f}" if high else "N/A")
+                    
+                    low = engine.fundamentals.get('Low52')
+                    f6.metric("52W Low", f"${low:.2f}" if low else "N/A")
+                    
+                    debt = engine.fundamentals.get('DebtToEquity')
+                    f7.metric("Debt/Equity", f"{debt:.2f}" if debt else "N/A")
+                    
+                    f8.metric("Status", "Active 🟢")
+
+        except Exception as e:
+            st.error(f"Analysis Failed: {e}")
+
+# MAIN AREA: RADAR
+elif mode == "Market Radar" and scan_btn:
+    st.subheader(f"📡 Scanning {sector} Sector...")
+    tickers = SECTORS[sector]
+    
+    leaderboard = []
+    progress_bar = st.progress(0)
+    
+    for i, t in enumerate(tickers):
+        try:
             eng = IndusVCEngine(t)
             eng.fetch_data()
             eng.engineer_features()
             eng.train_model()
             forecast = eng.get_forecast()
             
-            sig = "HOLD 🟡"
-            if forecast > 0.5: sig = "BUY 🟢"
-            elif forecast < -0.5: sig = "SELL 🔴"
+            sig = "HOLD"
+            if forecast > 0.5: sig = "BUY"
+            elif forecast < -0.5: sig = "SELL"
             
-            leaderboard.append({'Ticker': t, 'Forecast': forecast, 'Signal': sig, 'Price': eng.data.iloc[-1]['Close']})
+            leaderboard.append({
+                "Ticker": t,
+                "Price": f"${eng.data.iloc[-1]['Close']:.2f}",
+                "Forecast": forecast,
+                "Signal": sig
+            })
         except:
             pass
-            
-    leaderboard.sort(key=lambda x: x['Forecast'], reverse=True)
+        progress_bar.progress((i + 1) / len(tickers))
+        
+    # Sort and Display
+    df = pd.DataFrame(leaderboard).sort_values(by="Forecast", ascending=False)
     
-    print("\n\n" + "="*50)
-    print(f"  🏆 TOP OPPORTUNITIES")
-    print("="*50)
-    print(f"{'TICKER':<10} {'PRICE':<10} {'FORECAST':<10} {'SIGNAL'}")
-    print("-" * 50)
-    for row in leaderboard[:5]:
-        print(f"{row['Ticker']:<10} ${row['Price']:<9.2f} {row['Forecast']:>+5.2f}%    {row['Signal']}")
-    return leaderboard
-
-def run_direct_search():
-    global verbose
-    verbose = True
-    ticker = input("\n🔍 Enter Stock Ticker: ").upper().strip()
-    if ticker:
-        try:
-            engine = IndusVCEngine(ticker)
-            engine.fetch_data()
-            engine.analyze_sentiment() # Added Sentiment back!
-            engine.engineer_features()
-            engine.train_model()
-            engine.run_backtest()
-            engine.predict_tomorrow()
-        except Exception as e:
-            print(f"Error: {e}")
-
-if __name__ == "__main__":
-    while True:
-        print("\n=== INDUS VC COMMAND CENTER ===")
-        print("[1] Radar Scan  [2] Direct Search  [Q] Quit")
-        mode = input("Select: ").upper().strip()
-        if mode == 'Q': break
-        elif mode == '2': run_direct_search()
-        elif mode == '1':
-            print("Select Sector Code (1-5):")
-            for k,v in SECTORS.items(): print(f"[{k}] {v[0]}")
-            c = input("Choice: ")
-            if c in SECTORS: 
-                ranked_list = run_radar(SECTORS[c][1])
-                if ranked_list:
-                    print(f"\n💡 Deep Dive on {ranked_list[0]['Ticker']}? (Y/N)")
-                    if input().upper() == 'Y':
-                        # Auto-run deep dive on top pick
-                        verbose = True
-                        eng = IndusVCEngine(ranked_list[0]['Ticker'])
-                        eng.fetch_data()
-                        eng.analyze_sentiment()
-                        eng.engineer_features()
-                        eng.train_model()
-                        eng.run_backtest()
-                        eng.predict_tomorrow()
-
-
-                        
+    # Styled Dataframe
+    st.dataframe(
+        df.style.map(lambda x: 'color: green' if x == 'BUY' else ('color: red' if x == 'SELL' else 'color: gray'), subset=['Signal'])
+        .format({"Forecast": "{:+.2f}%"}),
+        use_container_width=True
+    )
+    
+    if not df.empty:
+        top_pick = df.iloc[0]['Ticker']
+        st.success(f"💡 **Top Pick:** {top_pick} shows the strongest momentum.")
