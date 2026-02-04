@@ -403,18 +403,59 @@ elif mode == "Market Radar" and scan_btn:
             })
         except:
             pass
-        progress_bar.progress((i + 1) / len(tickers))
-        
-    # Sort and Display
-    df = pd.DataFrame(leaderboard).sort_values(by="Forecast", ascending=False)
+            
+    leaderboard.sort(key=lambda x: x['Forecast'], reverse=True)
     
-    # Styled Dataframe
-    st.dataframe(
-        df.style.map(lambda x: 'color: green' if x == 'BUY' else ('color: red' if x == 'SELL' else 'color: gray'), subset=['Signal'])
-        .format({"Forecast": "{:+.2f}%"}),
-        use_container_width=True
-    )
-    
-    if not df.empty:
-        top_pick = df.iloc[0]['Ticker']
-        st.success(f"💡 **Top Pick:** {top_pick} shows the strongest momentum.")
+    print("\n\n" + "="*50)
+    print(f"  🏆 TOP OPPORTUNITIES")
+    print("="*50)
+    print(f"{'TICKER':<10} {'PRICE':<10} {'FORECAST':<10} {'SIGNAL'}")
+    print("-" * 50)
+    for row in leaderboard[:5]:
+        print(f"{row['Ticker']:<10} ${row['Price']:<9.2f} {row['Forecast']:>+5.2f}%    {row['Signal']}")
+    return leaderboard
+
+def run_direct_search():
+    global verbose
+    verbose = True
+    ticker = input("\n🔍 Enter Stock Ticker: ").upper().strip()
+    if ticker:
+        try:
+            engine = IndusVCEngine(ticker)
+            engine.fetch_data()
+            engine.analyze_sentiment() # Added Sentiment back!
+            engine.engineer_features()
+            engine.train_model()
+            engine.run_backtest()
+            engine.predict_tomorrow()
+        except Exception as e:
+            print(f"Error: {e}")
+
+if __name__ == "__main__":
+    while True:
+        print("\n=== INDUS VC COMMAND CENTER ===")
+        print("[1] Radar Scan  [2] Direct Search  [Q] Quit")
+        mode = input("Select: ").upper().strip()
+        if mode == 'Q': break
+        elif mode == '2': run_direct_search()
+        elif mode == '1':
+            print("Select Sector Code (1-5):")
+            for k,v in SECTORS.items(): print(f"[{k}] {v[0]}")
+            c = input("Choice: ")
+            if c in SECTORS: 
+                ranked_list = run_radar(SECTORS[c][1])
+                if ranked_list:
+                    print(f"\n💡 Deep Dive on {ranked_list[0]['Ticker']}? (Y/N)")
+                    if input().upper() == 'Y':
+                        # Auto-run deep dive on top pick
+                        verbose = True
+                        eng = IndusVCEngine(ranked_list[0]['Ticker'])
+                        eng.fetch_data()
+                        eng.analyze_sentiment()
+                        eng.engineer_features()
+                        eng.train_model()
+                        eng.run_backtest()
+                        eng.predict_tomorrow()
+
+
+                        
